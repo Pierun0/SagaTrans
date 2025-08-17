@@ -1,0 +1,7 @@
+PyQt5
+tiktoken
+requests
+markdown2
+pyperclip
+ebooklib
+PyQtWebEngine
