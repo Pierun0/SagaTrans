@@ -96,5 +96,5 @@ class OpenRouterAdapter(ModelRequestHandler):
             "temperature": params.get("temperature", 0.7),
             "top_p": params.get("top_p", 0.9),
             "top_k": params.get("top_k", 40),
-            "max_tokens": min(params.get("max_tokens", 2048), 4000)  # Cap at 4000 tokens for OpenRouter
+            "max_tokens": params.get("max_tokens_completion", 16000)  # Cap 16000 tokens completion if not specified
         }
