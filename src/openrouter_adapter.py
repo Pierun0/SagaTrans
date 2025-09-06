@@ -55,10 +55,9 @@ class OpenRouterAdapter(ModelRequestHandler):
             "stream": True,
             **converted_params
         }
-
         try:
             with requests.post(self.endpoint, json=openrouter_payload,
-                             headers=headers, stream=True, timeout=90) as response:
+                             headers=headers, stream=True, timeout=60*10) as response:
                 response.raise_for_status()
                 
                 for line in response.iter_lines():
@@ -96,5 +95,7 @@ class OpenRouterAdapter(ModelRequestHandler):
             "temperature": params.get("temperature", 0.7),
             "top_p": params.get("top_p", 0.9),
             "top_k": params.get("top_k", 40),
-            "max_tokens": params.get("max_tokens_completion", 16000)  # Cap 16000 tokens completion if not specified
+            "max_tokens": params.get("max_tokens_completion", 16000),  # Cap 16000 tokens completion if not specified
+            "include_reasoning": params.get("thinking", False)
+            #"include_reasoning": params.get("thinking_included", 'false')
         }
