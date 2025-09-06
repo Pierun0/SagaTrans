@@ -1,5 +1,5 @@
 # SagaTrans
-
+The application contains many errors, please keep this in mind.
 ![Example Application](example.jpg)
 
 A graphical application specifically designed for translating chapters from books, web novels, light novels, and similar texts. It manages and performs AI-powered translations with project-based organization, token management, and markdown preview.
