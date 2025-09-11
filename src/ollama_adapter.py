@@ -93,7 +93,7 @@ class OllamaAdapter(ModelRequestHandler):
             "temperature": params.get("temperature", 0.7),
             "top_p": params.get("top_p", 0.9),
             "top_k": params.get("top_k", 40),
-            "num_ctx": params.get("max_tokens", 2048),
+            "num_ctx": params.get("max_tokens", 16000),
             "use_mmap": params.get("use_mmap", True),
             "use_mlock": params.get("use_mlock", False)
         }
