@@ -22,8 +22,8 @@ class PreviewManager:
         self.main_window.toggle_live_preview_action.setChecked(self.main_window.preview_visible)
 
         if self.main_window.preview_visible:
-            self.main_window._schedule_source_preview_update()
-            self.main_window._schedule_target_preview_update()
+            self.main_window._schedule_source_text_preview_update()
+            self.main_window._schedule_translated_text_preview_update()
             self.main_window._sync_source_scroll_to_preview()
             self.main_window._sync_target_scroll_to_preview()
 
@@ -52,12 +52,12 @@ class PreviewManager:
         self.main_window._scroll_sync_timer.start(50)
 
     def _sync_source_scroll_to_preview(self):
-        if hasattr(self.main_window, 'source_preview'): # Check if source_preview exists
-            self._sync_scroll_to_preview(self.main_window.source_text_area, self.main_window.source_preview)
+        if hasattr(self.main_window, 'source_text_preview'): # Check if source_text_preview exists
+            self._sync_scroll_to_preview(self.main_window.source_text_area, self.main_window.source_text_preview)
 
     def _sync_target_scroll_to_preview(self):
-        if hasattr(self.main_window, 'target_preview'): # Check if target_preview exists
-            self._sync_scroll_to_preview(self.main_window.translated_text_area, self.main_window.target_preview)
+        if hasattr(self.main_window, 'translated_text_preview'): # Check if translated_text_preview exists
+            self._sync_scroll_to_preview(self.main_window.translated_text_area, self.main_window.translated_text_preview)
 
     def _update_preview_content(self, text_edit, preview_view):
         if not self.main_window.preview_visible or not QWebEngineView or not preview_view:
@@ -107,39 +107,39 @@ class PreviewManager:
             error_html = f"<html><body>Error rendering Markdown:<br><pre>{e}</pre></body></html>"
             preview_view.setHtml(error_html)
 
-    def _schedule_source_preview_update(self):
+    def _schedule_source_text_preview_update(self):
         if not QWebEngineView or not self.main_window.preview_visible:
             return
 
-        if self.main_window._source_preview_timer is None:
-            self.main_window._source_preview_timer = QTimer()
-            self.main_window._source_preview_timer.setSingleShot(True)
-            # Connect only if source_preview exists (which it should if QWebEngineView is available)
-            if hasattr(self.main_window, 'source_preview') and self.main_window.source_preview:
-                self.main_window._source_preview_timer.timeout.connect(lambda: self._update_preview_content(self.main_window.source_text_area, self.main_window.source_preview))
+        if self.main_window._source_text_preview_timer is None:
+            self.main_window._source_text_preview_timer = QTimer()
+            self.main_window._source_text_preview_timer.setSingleShot(True)
+            # Connect only if source_text_preview exists (which it should if QWebEngineView is available)
+            if hasattr(self.main_window, 'source_text_preview') and self.main_window.source_text_preview:
+                self.main_window._source_text_preview_timer.timeout.connect(lambda: self._update_preview_content(self.main_window.source_text_area, self.main_window.source_text_preview))
             else:
-                 # If source_preview doesn't exist despite QWebEngineView, clean up timer
-                 self.main_window._source_preview_timer = None
+                 # If source_text_preview doesn't exist despite QWebEngineView, clean up timer
+                 self.main_window._source_text_preview_timer = None
                  return
 
-        self.main_window._source_preview_timer.start(300)
+        self.main_window._source_text_preview_timer.start(300)
 
-    def _schedule_target_preview_update(self):
+    def _schedule_translated_text_preview_update(self):
         if not QWebEngineView or not self.main_window.preview_visible:
             return
 
-        if self.main_window._target_preview_timer is None:
-            self.main_window._target_preview_timer = QTimer()
-            self.main_window._target_preview_timer.setSingleShot(True)
-            # Connect only if target_preview exists (which it should if QWebEngineView is available)
-            if hasattr(self.main_window, 'target_preview') and self.main_window.target_preview:
-                self.main_window._target_preview_timer.timeout.connect(lambda: self._update_preview_content(self.main_window.translated_text_area, self.main_window.target_preview))
+        if self.main_window._translated_text_preview_timer is None:
+            self.main_window._translated_text_preview_timer = QTimer()
+            self.main_window._translated_text_preview_timer.setSingleShot(True)
+            # Connect only if translated_text_preview exists (which it should if QWebEngineView is available)
+            if hasattr(self.main_window, 'translated_text_preview') and self.main_window.translated_text_preview:
+                self.main_window._translated_text_preview_timer.timeout.connect(lambda: self._update_preview_content(self.main_window.translated_text_area, self.main_window.translated_text_preview))
             else:
-                 # If target_preview doesn't exist despite QWebEngineView, clean up timer
-                 self.main_window._target_preview_timer = None
+                 # If translated_text_preview doesn't exist despite QWebEngineView, clean up timer
+                 self.main_window._translated_text_preview_timer = None
                  return
 
-        self.main_window._target_preview_timer.start(300)
+        self.main_window._translated_text_preview_timer.start(300)
         
     def _execute_scroll_js(self, preview_view, scroll_fraction):
         """Execute JavaScript to scroll the preview to a specific fraction."""

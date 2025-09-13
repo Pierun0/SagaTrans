@@ -68,8 +68,8 @@ class QtMainWindow(QMainWindow):
         self.preview_visible = False
         self._debounce_timer = None # For token counts (Kept for potential future use, but disconnected from text edits)
         self._auto_save_timer = None # For auto-saving text edits
-        self._source_preview_timer = None # Initialize to None
-        self._target_preview_timer = None # Initialize to None
+        self._source_text_preview_timer = None # Initialize to None
+        self._translated_text_preview_timer = None # Initialize to None
         self._scroll_sync_timer = None
         self.last_response = None # To store the last API response
         self._response_buffer = [] # Added response buffer
@@ -186,7 +186,7 @@ class QtMainWindow(QMainWindow):
 
         self.source_text_area.textChanged.connect(self.mark_dirty)
         self.source_text_area.textChanged.connect(self._schedule_auto_save) # Connected to new auto-save
-        self.source_text_area.textChanged.connect(self._schedule_source_preview_update)
+        self.source_text_area.textChanged.connect(self._schedule_source_text_preview_update)
         self.source_text_area.cursorPositionChanged.connect(self._sync_source_scroll_to_preview)
         self.source_text_area.verticalScrollBar().valueChanged.connect(self._sync_source_scroll_to_preview)
 
@@ -212,7 +212,7 @@ class QtMainWindow(QMainWindow):
         # self.source_text_area.textChanged.connect(self.mark_dirty) # Already connected above
         # self.source_text_area.textChanged.connect(self._delayed_update_token_counts) # Disconnected above
         # self.source_text_area.textChanged.connect(self._schedule_auto_save) # Connected above
-        # self.source_text_area.textChanged.connect(self._schedule_source_preview_update) # Already connected above
+        # self.source_text_area.textChanged.connect(self._schedule_source_text_preview_update) # Already connected above
         # self.source_text_area.cursorPositionChanged.connect(self._sync_source_scroll_to_preview) # Already connected above
         # self.source_text_area.verticalScrollBar().valueChanged.connect(self._sync_source_scroll_to_preview) # Already connected above
 
@@ -220,7 +220,7 @@ class QtMainWindow(QMainWindow):
         self.translated_text_area.textChanged.connect(self.mark_dirty)
         # self.translated_text_area.textChanged.connect(self._delayed_update_token_counts) # Disconnected
         self.translated_text_area.textChanged.connect(self._schedule_auto_save) # Connected to new auto-save
-        self.translated_text_area.textChanged.connect(self._schedule_target_preview_update)
+        self.translated_text_area.textChanged.connect(self._schedule_translated_text_preview_update)
         self.translated_text_area.cursorPositionChanged.connect(self._sync_target_scroll_to_preview)
         self.translated_text_area.verticalScrollBar().valueChanged.connect(self._sync_target_scroll_to_preview)
 
@@ -231,41 +231,41 @@ class QtMainWindow(QMainWindow):
         self.preview_frame_layout.setContentsMargins(0, 0, 0, 0) # Remove margins
         # Placeholder for preview content
 
-        # Source Preview
-        self.source_preview_widget = QWidget()
-        source_preview_layout = QVBoxLayout(self.source_preview_widget)
-        source_preview_layout.setContentsMargins(0,0,0,0)
-        source_preview_layout.addWidget(QLabel("Source Preview:"))
+        # Source Text Preview
+        self.source_text_preview_widget = QWidget()
+        source_text_preview_layout = QVBoxLayout(self.source_text_preview_widget)
+        source_text_preview_layout.setContentsMargins(0,0,0,0)
+        source_text_preview_layout.addWidget(QLabel("Source Text Preview:"))
         if QWebEngineView and QWebEngineSettings:
-            self.source_preview = QWebEngineView()
-            self.source_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            self.source_preview.setHtml("<html><body><i>Preview unavailable</i></body></html>")
+            self.source_text_preview = QWebEngineView()
+            self.source_text_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.source_text_preview.setHtml("<html><body><i>Preview unavailable</i></body></html>")
             # Explicitly enable JavaScript and set encoding
-            self.source_preview.settings().setAttribute(QWebEngineSettings.JavascriptEnabled, True)
-            self.source_preview.settings().setDefaultTextEncoding("utf-8")
-            source_preview_layout.addWidget(self.source_preview)
+            self.source_text_preview.settings().setAttribute(QWebEngineSettings.JavascriptEnabled, True)
+            self.source_text_preview.settings().setDefaultTextEncoding("utf-8")
+            source_text_preview_layout.addWidget(self.source_text_preview)
         else:
-            source_preview_layout.addWidget(QLabel("QWebEngineView/QWebEngineSettings not available"))
-        self.preview_frame_layout.addWidget(self.source_preview_widget)
+            source_text_preview_layout.addWidget(QLabel("QWebEngineView/QWebEngineSettings not available"))
+        self.preview_frame_layout.addWidget(self.source_text_preview_widget)
         self.preview_frame_layout.addStretch(1) # Add stretch after source preview
         
 
-        # Target Preview
-        self.target_preview_widget = QWidget()
-        target_preview_layout = QVBoxLayout(self.target_preview_widget)
-        target_preview_layout.setContentsMargins(0,0,0,0)
-        target_preview_layout.addWidget(QLabel("Target Preview:"))
+        # Translated Text Preview
+        self.translated_text_preview_widget = QWidget()
+        translated_text_preview_layout = QVBoxLayout(self.translated_text_preview_widget)
+        translated_text_preview_layout.setContentsMargins(0,0,0,0)
+        translated_text_preview_layout.addWidget(QLabel("Translated Text Preview:"))
         if QWebEngineView and QWebEngineSettings:
-            self.target_preview = QWebEngineView()
-            self.target_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            self.target_preview.setHtml("<html><body><i>Preview unavailable</i></body></html>")
+            self.translated_text_preview = QWebEngineView()
+            self.translated_text_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.translated_text_preview.setHtml("<html><body><i>Preview unavailable</i></body></html>")
             # Explicitly enable JavaScript and set encoding
-            self.target_preview.settings().setAttribute(QWebEngineSettings.JavascriptEnabled, True)
-            self.target_preview.settings().setDefaultTextEncoding("utf-8")
-            target_preview_layout.addWidget(self.target_preview)
+            self.translated_text_preview.settings().setAttribute(QWebEngineSettings.JavascriptEnabled, True)
+            self.translated_text_preview.settings().setDefaultTextEncoding("utf-8")
+            translated_text_preview_layout.addWidget(self.translated_text_preview)
         else:
-            target_preview_layout.addWidget(QLabel("QWebEngineView/QWebEngineSettings not available"))
-        self.preview_frame_layout.addWidget(self.target_preview_widget)
+            translated_text_preview_layout.addWidget(QLabel("QWebEngineView/QWebEngineSettings not available"))
+        self.preview_frame_layout.addWidget(self.translated_text_preview_widget)
         self.preview_frame_layout.addStretch(1) # Add stretch after target preview
 
 
@@ -872,11 +872,11 @@ class QtMainWindow(QMainWindow):
     def _sync_target_scroll_to_preview(self):
         self.preview_manager._sync_target_scroll_to_preview()
 
-    def _schedule_source_preview_update(self):
-        self.preview_manager._schedule_source_preview_update()
+    def _schedule_source_text_preview_update(self):
+        self.preview_manager._schedule_source_text_preview_update()
 
-    def _schedule_target_preview_update(self):
-        self.preview_manager._schedule_target_preview_update()
+    def _schedule_translated_text_preview_update(self):
+        self.preview_manager._schedule_translated_text_preview_update()
 
     # --- Request/Response Display Methods ---
     def show_request_payload(self):

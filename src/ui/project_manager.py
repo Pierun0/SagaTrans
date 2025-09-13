@@ -1,6 +1,9 @@
 import os
 import json
 from PyQt5.QtWidgets import QMessageBox, QFileDialog, QDialog
+import os
+import shutil
+import json
 from ui.new_project_dialog import NewProjectDialog
 from ui.project_selection_dialog import ProjectSelectionDialog
 
@@ -207,3 +210,128 @@ class ProjectManager:
                 QMessageBox.information(self.main_window, "Export EPUB", f"Project successfully exported to:\n{filepath}")
             else:
                 QMessageBox.critical(self.main_window, "Export EPUB Error", f"Failed to export EPUB:\n{message}")
+
+    def remove_project_file(self, project_filename):
+        """Remove a project file from the projects directory."""
+        try:
+            projects_dir = "projects"
+            filepath = os.path.join(projects_dir, project_filename)
+            
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                return True, None
+            else:
+                return False, f"Project file '{project_filename}' not found."
+        except Exception as e:
+            return False, f"Failed to remove project '{project_filename}':\n{e}"
+
+    def duplicate_project_file(self, source_filename, new_name):
+        """Duplicate a project file with a new name."""
+        try:
+            projects_dir = "projects"
+            source_filepath = os.path.join(projects_dir, source_filename)
+            new_filename = new_name + ".json"
+            new_filepath = os.path.join(projects_dir, new_filename)
+            
+            if os.path.exists(new_filepath):
+                return False, f"A project named '{new_filename}' already exists."
+            
+            if os.path.exists(source_filepath):
+                shutil.copy2(source_filepath, new_filepath)
+                
+                # Update the project title in the duplicated file
+                try:
+                    with open(new_filepath, 'r', encoding='utf-8') as f:
+                        project_data = json.load(f)
+                    
+                    project_data['title'] = new_name
+                    
+                    with open(new_filepath, 'w', encoding='utf-8') as f:
+                        json.dump(project_data, f, indent=4)
+                        
+                except Exception as json_e:
+                    # If title update fails, the file is still duplicated
+                    pass
+                
+                return True, new_filename
+            else:
+                return False, f"Original project file '{source_filename}' not found."
+        except Exception as e:
+            return False, f"Failed to duplicate project:\n{e}"
+
+    def rename_project_file(self, old_filename, new_name):
+        """Rename a project file and update its title."""
+        try:
+            projects_dir = "projects"
+            old_filepath = os.path.join(projects_dir, old_filename)
+            new_filename = new_name + ".json"
+            new_filepath = os.path.join(projects_dir, new_filename)
+            
+            if os.path.exists(new_filepath):
+                return False, f"A project named '{new_filename}' already exists."
+            
+            if os.path.exists(old_filepath):
+                # Rename the file
+                os.rename(old_filepath, new_filepath)
+                
+                # Update the project title in the JSON file
+                try:
+                    with open(new_filepath, 'r', encoding='utf-8') as f:
+                        project_data = json.load(f)
+                    
+                    project_data['title'] = new_name
+                    
+                    with open(new_filepath, 'w', encoding='utf-8') as f:
+                        json.dump(project_data, f, indent=4)
+                        
+                except Exception as json_e:
+                    # If title update fails, the file is still renamed
+                    pass
+                
+                return True, new_filename
+            else:
+                return False, f"Project file '{old_filename}' not found."
+        except Exception as e:
+            return False, f"Failed to rename project:\n{e}"
+
+    def export_project_file(self, project_filename, export_path):
+        """Export a project file to a specified location."""
+        try:
+            projects_dir = "projects"
+            source_filepath = os.path.join(projects_dir, project_filename)
+            
+            if os.path.exists(source_filepath):
+                shutil.copy2(source_filepath, export_path)
+                return True, None
+            else:
+                return False, f"Project file '{project_filename}' not found."
+        except Exception as e:
+            return False, f"Failed to export project:\n{e}"
+
+    def import_project_file(self, import_path):
+        """Import a project file from a specified location."""
+        try:
+            projects_dir = "projects"
+            filename = os.path.basename(import_path)
+            dest_filepath = os.path.join(projects_dir, filename)
+            
+            # Check if file already exists
+            if os.path.exists(dest_filepath):
+                return False, f"A project named '{filename}' already exists.", None
+            
+            # Copy the file
+            shutil.copy2(import_path, dest_filepath)
+            
+            # Validate the imported file
+            try:
+                with open(dest_filepath, 'r', encoding='utf-8') as f:
+                    json.load(f)  # Just validate it's valid JSON
+            except Exception as e:
+                # Remove corrupted file
+                if os.path.exists(dest_filepath):
+                    os.remove(dest_filepath)
+                return False, f"Invalid project file format:\n{e}", None
+            
+            return True, None, filename
+        except Exception as e:
+            return False, f"Failed to import project:\n{e}", None
