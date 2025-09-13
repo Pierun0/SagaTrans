@@ -35,9 +35,12 @@ from ui.plain_text_edit import PlainTextEdit
 from ui.translation_thread import TranslationThread
 
 class QtMainWindow(QMainWindow):
+    # Application version
+    VERSION = "0.1.0"
+    
     def __init__(self, model_manager=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("SagaTrans")
+        self.setWindowTitle(f"SagaTrans v{self.VERSION}")
         self.model_manager = model_manager
         self.resize(1200, 800)
 
@@ -338,6 +341,10 @@ class QtMainWindow(QMainWindow):
         self.view_request_action.setShortcut("Ctrl+R")
         self.view_response_action = QAction("Show Last Response", self)
         self.view_response_action.setShortcut("Ctrl+Shift+R")
+        
+        # Add About action
+        self.about_action = QAction("About", self)
+        self.about_action.setShortcut("F1")
 
         # Add Export as EPUB action
         self.export_epub_action = QAction("Export as EPUB", self)
@@ -376,6 +383,7 @@ class QtMainWindow(QMainWindow):
         toolbar.addAction(self.view_request_action)
         toolbar.addAction(self.view_response_action)
         toolbar.addSeparator()
+        toolbar.addAction(self.about_action) # Add About action to toolbar
         toolbar.addAction(self.export_epub_action) # Add the new action to the toolbar
         toolbar.addSeparator()
         toolbar.addWidget(QLabel("Context Mode:"))
@@ -391,6 +399,7 @@ class QtMainWindow(QMainWindow):
         self.toggle_live_preview_action.triggered.connect(self.toggle_live_preview_panel)
         self.view_request_action.triggered.connect(self.show_request_payload)
         self.view_response_action.triggered.connect(self.show_last_response)
+        self.about_action.triggered.connect(self.show_about)
         self.export_epub_action.triggered.connect(self.export_epub) # Connect the new action
 
         # Connect item buttons
@@ -1186,5 +1195,60 @@ class QtMainWindow(QMainWindow):
                 project_title = self.current_project_data.get("title", "Untitled Project")
                 self.statusBar().showMessage(f"Project '{project_title}' loaded. Select an item or add a new one.")
         else:
-            self.statusBar().showMessage("No project loaded. Use 'New' or 'Load' from the toolbar.")
+            self.statusBar().showMessage(f"SagaTrans v{self.VERSION} - No project loaded. Use 'New' or 'Load' from the toolbar.")
+
+    # --- About Dialog ---
+    def show_about(self):
+        """Display the About dialog with program information."""
+        about_dialog = QDialog(self)
+        about_dialog.setWindowTitle(f"About SagaTrans v{self.VERSION}")
+        about_dialog.setFixedSize(400, 300)
+        about_dialog.setModal(True)
+        
+        layout = QVBoxLayout(about_dialog)
+        
+        # Create a title label with icon
+        title_label = QLabel("SagaTrans")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("font-size: 24px; font-weight: bold; padding: 10px;")
+        layout.addWidget(title_label)
+        
+        # Version label
+        version_label = QLabel(f"Version {self.VERSION}")
+        version_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(version_label)
+        
+        # Description
+        description_label = QLabel(
+            "SagaTrans is a translation tool for novels and stories.\n\n"
+            "Features:\n"
+            "• AI-powered translation using various models\n"
+            "• Context-aware translation with project-wide context\n"
+            "• Live preview of translations\n"
+            "• Export to EPUB format\n"
+            "• Token counting and management\n\n"
+            "Built with PyQt5 and designed for translators and novel enthusiasts."
+        )
+        description_label.setWordWrap(True)
+        description_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(description_label)
+        
+        # Copyright
+        copyright_label = QLabel("© 2025 Pierun0")
+        copyright_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(copyright_label)
+        
+        # GitHub link
+        github_label = QLabel("GitHub: https://github.com/Pierun0/SagaTrans")
+        github_label.setAlignment(Qt.AlignCenter)
+        github_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        github_label.setOpenExternalLinks(True)
+        layout.addWidget(github_label)
+        
+        # Close button
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok)
+        button_box.accepted.connect(about_dialog.accept)
+        layout.addWidget(button_box)
+        
+        about_dialog.exec_()
 
