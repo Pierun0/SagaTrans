@@ -33,6 +33,8 @@ from ui.translation_manager import TranslationManager
 from ui.token_manager import TokenManager
 from ui.plain_text_edit import PlainTextEdit
 from ui.translation_thread import TranslationThread
+from ui.translation_state_manager import TranslationStateManager, TranslationState, LockLevel
+from ui.item_translation_buffer import ItemTranslationBuffer
 
 class QtMainWindow(QMainWindow):
     # Application version
@@ -76,6 +78,8 @@ class QtMainWindow(QMainWindow):
         self._scroll_sync_timer = None
         self.last_response = None # To store the last API response
         self._response_buffer = [] # Added response buffer
+        self._is_programmatically_updating_text = False  # Flag to prevent textChanged during programmatic updates
+        self._is_currently_streaming = False  # Flag to track if we're actively streaming translation
 
         # Initialize manager classes
         self.project_manager = ProjectManager(self)
@@ -83,6 +87,12 @@ class QtMainWindow(QMainWindow):
         self.preview_manager = PreviewManager(self)
         self.translation_manager = TranslationManager(self)
         self.token_manager = TokenManager(self)
+        self.translation_state_manager = TranslationStateManager(self)
+        
+        # Connect translation state manager signals
+        self.translation_state_manager.state_changed.connect(self._on_translation_state_changed)
+        self.translation_state_manager.lock_levels_changed.connect(self._on_lock_levels_changed)
+        self.translation_state_manager.translating_item_changed.connect(self._on_translating_item_changed)
 
         # Create a central widget
         self.central_widget = QWidget()
@@ -293,9 +303,9 @@ class QtMainWindow(QMainWindow):
         self.translate_button = QPushButton("Translate ->")
         self.translate_button.clicked.connect(self.translate_current_item) # Connect to translate_current_item
         self.stop_button = QPushButton("⏹ Stop")
-        self.stop_button.clicked.connect(self.stop_translation)
+        self.stop_button.clicked.connect(self.stop_selected_item_translation)
         self.stop_button.setEnabled(False)
-        self.stop_button.setToolTip("Stop current translation")
+        self.stop_button.setToolTip("Stop translation of selected item")
         self.stop_button.setStyleSheet("""
             QPushButton {
                 min-width: 80px;
@@ -502,7 +512,47 @@ class QtMainWindow(QMainWindow):
             name = item.get("name", f"Item {i+1}")
             source_tokens = self.count_tokens(item.get('source_text', ''))
             target_tokens = self.count_tokens(item.get('translated_text', ''))
-            display_text = f"{i + 1}. {name.ljust(40)} S:{source_tokens:4} T:{target_tokens:4}"
+            
+            # Check if item is suitable for context
+            is_suitable_for_context = self._is_item_suitable_for_context(i)
+            
+            # Add translation status prefix
+            if self._is_item_translating(i):
+                display_name = f"[🔄] TRANSLATING: {name}"
+                font_weight = "bold"
+                font_style = "normal"
+            elif i in self.translation_manager.active_translations:
+                # Check if it's a completed translation that's being viewed
+                buffer = self.translation_manager.active_translations[i]
+                if buffer.is_complete:
+                    display_name = f"[✅] COMPLETED: {name}"
+                    font_weight = "normal"
+                    font_style = "normal"
+                elif buffer.is_stopped:
+                    display_name = f"[⏹] STOPPED: {name}"
+                    font_weight = "normal"
+                    font_style = "italic"
+                else:
+                    display_name = f"[🔄] TRANSLATING: {name}"
+                    font_weight = "bold"
+                    font_style = "normal"
+            elif self._is_item_locked(i):
+                display_name = f"[🔒] LOCKED: {name}"
+                font_weight = "normal"
+                font_style = "italic"
+            else:
+                display_name = f"[✓] READY: {name}"
+                font_weight = "normal"
+                font_style = "normal"
+                
+            # Add context exclusion indicator if item is not suitable for context
+            if not is_suitable_for_context:
+                font_style = "italic"
+            # Add context inclusion indicator if needed (keep existing functionality)
+            elif i in included_indices:
+                display_name = f"[⚙️] {display_name}"
+                
+            display_text = f"{i + 1}. {display_name.ljust(50)} S:{source_tokens:4} T:{target_tokens:4}"
 
             list_item = QListWidgetItem(display_text)
 
@@ -512,19 +562,26 @@ class QtMainWindow(QMainWindow):
                  # Set initial checked state based on item data, default to checked if key doesn't exist
                  is_checked = item.get("include_in_context", True)
                  list_item.setCheckState(Qt.Checked if is_checked else Qt.Unchecked)
-            else:  
+            else:
                  # Ensure no checkbox if not in manual mode
                  list_item.setFlags(list_item.flags() & ~Qt.ItemIsUserCheckable)
                  list_item.setCheckState(Qt.Unchecked) # Clear check state
 
+            # Apply font styling based on translation status
+            font = list_item.font()
+            font.setBold(font_weight == "bold")
+            font.setItalic(font_style == "italic")
+            list_item.setFont(font)
+
+            # Keep existing color coding for context only (remove translation colors to avoid conflicts)
             if i == self.current_item_index:
-                list_item.setBackground(QColor(255, 165, 0))
+                list_item.setBackground(QColor(255, 165, 0))  # Orange for current selection
             elif i in included_indices:
-                list_item.setBackground(QColor(144, 238, 144))
+                list_item.setBackground(QColor(144, 238, 144))  # Green for context
             elif i in excluded_indices:
-                list_item.setBackground(Qt.lightGray)
+                list_item.setBackground(Qt.lightGray)  # Light gray for excluded
             else:
-                list_item.setBackground(Qt.white)
+                list_item.setBackground(Qt.white)  # White for normal
 
             self.item_listbox.addItem(list_item)
 
@@ -544,11 +601,60 @@ class QtMainWindow(QMainWindow):
             name = item_data.get("name", f"Item {index + 1}")
             source_tokens = self.count_tokens(item_data.get('source_text', ''))
             target_tokens = self.count_tokens(item_data.get('translated_text', ''))
-            display_text = f"{index + 1}. {name.ljust(40)} S:{source_tokens:4} T:{target_tokens:4}"
+            
+            # Check if item is suitable for context
+            is_suitable_for_context = self._is_item_suitable_for_context(index)
+            
+            # Add translation status prefix
+            if self._is_item_translating(index):
+                display_name = f"[🔄] TRANSLATING: {name}"
+                font_weight = "bold"
+                font_style = "normal"
+            elif index in self.translation_manager.active_translations:
+                # Check if it's a completed translation that's being viewed
+                buffer = self.translation_manager.active_translations[index]
+                if buffer.is_complete:
+                    display_name = f"[✅] COMPLETED: {name}"
+                    font_weight = "normal"
+                    font_style = "normal"
+                elif buffer.is_stopped:
+                    display_name = f"[⏹] STOPPED: {name}"
+                    font_weight = "normal"
+                    font_style = "italic"
+                else:
+                    display_name = f"[🔄] TRANSLATING: {name}"
+                    font_weight = "bold"
+                    font_style = "normal"
+            elif self._is_item_locked(index):
+                display_name = f"[🔒] LOCKED: {name}"
+                font_weight = "normal"
+                font_style = "italic"
+            else:
+                display_name = f"[✓] READY: {name}"
+                font_weight = "normal"
+                font_style = "normal"
+                
+            # Add context exclusion indicator if item is not suitable for context
+            if not is_suitable_for_context:
+                font_style = "italic"
+            else:
+                # Add context inclusion indicator if needed
+                included_indices, excluded_indices = self._get_context_item_indices()
+                if index in included_indices:
+                    display_name = f"[⚙️] {display_name}"
+                
+            display_text = f"{index + 1}. {display_name.ljust(50)} S:{source_tokens:4} T:{target_tokens:4}"
             list_item = self.item_listbox.item(index)
             if list_item:
                 list_item.setText(display_text)
-                included_indices, excluded_indices = self._get_context_item_indices()
+                
+                # Apply font styling based on translation status
+                font = list_item.font()
+                font.setBold(font_weight == "bold")
+                font.setItalic(font_style == "italic")
+                list_item.setFont(font)
+                
+                # Keep existing color coding for context only
                 if index == self.current_item_index:
                     list_item.setBackground(Qt.cyan)
                 elif index in included_indices:
@@ -625,9 +731,20 @@ class QtMainWindow(QMainWindow):
             current_source = self.source_text_area.toPlainText()
             current_target = self.translated_text_area.toPlainText()
 
-            # Always save the text, don't check if it changed
+            # Always save the source text
             item['source_text'] = current_source
-            item['translated_text'] = current_target
+            
+            # Only save target text if we're not currently streaming translation
+            # and there's no active buffer for this item, or if the buffer is stopped
+            if (not self._is_currently_streaming and
+                index_to_save not in self.translation_manager.active_translations):
+                item['translated_text'] = current_target
+            elif (index_to_save in self.translation_manager.active_translations):
+                buffer = self.translation_manager.active_translations[index_to_save]
+                # Allow saving if the buffer is stopped (user edited the translation)
+                if buffer.is_stopped:
+                    item['translated_text'] = current_target
+            
             self._clear_token_cache() # Clear cache as text content might have changed token count even if text looks same
             self.mark_dirty() # Mark dirty as data was potentially updated
             # print(f"DEBUG: Saved text for index {index_to_save}")
@@ -650,10 +767,15 @@ class QtMainWindow(QMainWindow):
             included = set()
             excluded = set()
             for i in range(self.item_listbox.count()):
-                list_item = self.item_listbox.item(i)
-                if list_item.checkState() == Qt.Checked:
-                    included.add(i)
+                # Only include items that are suitable for context
+                if self._is_item_suitable_for_context(i):
+                    list_item = self.item_listbox.item(i)
+                    if list_item.checkState() == Qt.Checked:
+                        included.add(i)
+                    else:
+                        excluded.add(i)
                 else:
+                    # Exclude items that are not suitable for context
                     excluded.add(i)
             return included, excluded
 
@@ -670,25 +792,33 @@ class QtMainWindow(QMainWindow):
             left, right = self.current_item_index - 1, self.current_item_index + 1
             while left >= 0 or right < len(self.project_items):
                 if left >= 0:
-                    item = self.project_items[left]
-                    item_tokens = self.count_tokens(item.get('source_text', '')) + \
-                                 self.count_tokens(item.get('translated_text', ''))
+                    # Only consider items that are suitable for context
+                    if self._is_item_suitable_for_context(left):
+                        item = self.project_items[left]
+                        item_tokens = self.count_tokens(item.get('source_text', '')) + \
+                                     self.count_tokens(item.get('translated_text', ''))
 
-                    if current_token_count + item_tokens <= target_token_budget:
-                        included.add(left)
-                        current_token_count += item_tokens
+                        if current_token_count + item_tokens <= target_token_budget:
+                            included.add(left)
+                            current_token_count += item_tokens
+                        else:
+                            excluded.add(left)
                     else:
                         excluded.add(left)
                     left -= 1
 
                 if right < len(self.project_items):
-                    item = self.project_items[right]
-                    item_tokens = self.count_tokens(item.get('source_text', '')) + \
-                                 self.count_tokens(item.get('translated_text', ''))
+                    # Only consider items that are suitable for context
+                    if self._is_item_suitable_for_context(right):
+                        item = self.project_items[right]
+                        item_tokens = self.count_tokens(item.get('source_text', '')) + \
+                                     self.count_tokens(item.get('translated_text', ''))
 
-                    if current_token_count + item_tokens <= target_token_budget:
-                        included.add(right)
-                        current_token_count += item_tokens
+                        if current_token_count + item_tokens <= target_token_budget:
+                            included.add(right)
+                            current_token_count += item_tokens
+                        else:
+                            excluded.add(right)
                     else:
                         excluded.add(right)
                     right += 1
@@ -715,29 +845,37 @@ class QtMainWindow(QMainWindow):
                 added_in_iteration = False
 
                 if right < len(self.project_items):
-                    item = self.project_items[right]
-                    item_tokens = self.count_tokens(item.get('source_text', '')) + \
-                                 self.count_tokens(item.get('translated_text', ''))
+                    # Only consider items that are suitable for context
+                    if self._is_item_suitable_for_context(right):
+                        item = self.project_items[right]
+                        item_tokens = self.count_tokens(item.get('source_text', '')) + \
+                                     self.count_tokens(item.get('translated_text', ''))
 
-                    if current_token_count + item_tokens <= target_token_budget:
-                        included.add(right)
-                        current_token_count += item_tokens
-                        added_in_iteration = True
+                        if current_token_count + item_tokens <= target_token_budget:
+                            included.add(right)
+                            current_token_count += item_tokens
+                            added_in_iteration = True
+                        else:
+                            pass
                     else:
-                        pass
+                        excluded.add(right)
                     right += 1
 
                 if left >= 0:
-                    item = self.project_items[left]
-                    item_tokens = self.count_tokens(item.get('source_text', '')) + \
-                                 self.count_tokens(item.get('translated_text', ''))
+                    # Only consider items that are suitable for context
+                    if self._is_item_suitable_for_context(left):
+                        item = self.project_items[left]
+                        item_tokens = self.count_tokens(item.get('source_text', '')) + \
+                                     self.count_tokens(item.get('translated_text', ''))
 
-                    if current_token_count + item_tokens <= target_token_budget:
-                        included.add(left)
-                        current_token_count += item_tokens
-                        added_in_iteration = True
+                        if current_token_count + item_tokens <= target_token_budget:
+                            included.add(left)
+                            current_token_count += item_tokens
+                            added_in_iteration = True
+                        else:
+                            pass
                     else:
-                        pass
+                        excluded.add(left)
                     left -= 1
 
                 if not added_in_iteration and (left < 0 and right >= len(self.project_items)):
@@ -808,6 +946,18 @@ class QtMainWindow(QMainWindow):
              # print(f"DEBUG: Item selection changed from {previous_item_index} to {current_row}. Saving previous item.")
              self._save_text_for_index(previous_item_index) # Use the renamed function
 
+        # Check if selection is allowed during translation
+        if (self.translation_state_manager.current_state == TranslationState.TRANSLATING):
+            # Prevent selecting items currently being translated
+            translating_items = self.translation_state_manager.get_translating_items()
+            if current_row in translating_items:
+                # Allow selecting items currently being translated
+                # This will show the real-time streaming progress
+                pass
+             
+            # Allow selection of other items during translation (only lock modifications)
+            # Remove the overly restrictive check that prevented all selection during translation
+
         # Update the current index *after* potentially saving the previous one
         self.current_item_index = current_row
         # print(f"DEBUG: Current item index set to {self.current_item_index}")
@@ -819,7 +969,43 @@ class QtMainWindow(QMainWindow):
                 self.source_text_area.blockSignals(True)
                 self.translated_text_area.blockSignals(True)
                 self.source_text_area.setPlainText(item_data.get('source_text', ''))
-                self.translated_text_area.setPlainText(item_data.get('translated_text', ''))
+                
+                # Check if this item has an active translation buffer
+                if (self.current_item_index in
+                    self.translation_manager.active_translations):
+                    # Show the buffered translation text
+                    buffer = self.translation_manager.active_translations[self.current_item_index]
+                    
+                    # Prevent textChanged signal during programmatic update
+                    self._start_programmatic_text_update()
+                    self.translated_text_area.blockSignals(True)
+                    self.translated_text_area.setPlainText(buffer.get_full_text())
+                    self.translated_text_area.blockSignals(False)
+                    self._end_programmatic_text_update()
+                    
+                    # Set read-only state based on item-specific translation status
+                    can_edit_source = self._can_edit_current_source_text()
+                    can_edit_translated = self._can_edit_current_translated_text()
+                    
+                    self.source_text_area.setReadOnly(not can_edit_source)
+                    self.translated_text_area.setReadOnly(not can_edit_translated)
+                else:
+                    # Show existing translation or empty
+                    self._start_programmatic_text_update()
+                    self.translated_text_area.blockSignals(True)
+                    self.translated_text_area.setPlainText(
+                        item_data.get('translated_text', '')
+                    )
+                    self.translated_text_area.blockSignals(False)
+                    self._end_programmatic_text_update()
+                    
+                    # Set read-only state based on item-specific translation status
+                    can_edit_source = self._can_edit_current_source_text()
+                    can_edit_translated = self._can_edit_current_translated_text()
+                    
+                    self.source_text_area.setReadOnly(not can_edit_source)
+                    self.translated_text_area.setReadOnly(not can_edit_translated)
+                
                 self.source_text_area.blockSignals(False)
                 self.translated_text_area.blockSignals(False)
             except IndexError:
@@ -856,7 +1042,10 @@ class QtMainWindow(QMainWindow):
             self._auto_save_timer = QTimer()
             self._auto_save_timer.setSingleShot(True)
             self._auto_save_timer.timeout.connect(self._auto_save_and_update_current_item)
-        self._auto_save_timer.start(500) # 500ms delay
+        
+        # Don't schedule auto-save if we're programmatically updating text or currently streaming
+        if not self._is_programmatically_updating_text and not self._is_currently_streaming:
+            self._auto_save_timer.start(500) # 500ms delay
 
     def _auto_save_and_update_current_item(self):
         """Saves the current item's text and updates its display in the listbox."""
@@ -865,7 +1054,9 @@ class QtMainWindow(QMainWindow):
 
         try:
             # Save text from editors to the in-memory project data using the current index
-            self._save_text_for_index(self.current_item_index) # Use the renamed function
+            # Only save if we're not currently streaming translation
+            if not self._is_currently_streaming:
+                self._save_text_for_index(self.current_item_index) # Use the renamed function
             # Update the display (including tokens) for the current item in the listbox
             self._update_listbox_item_display(self.current_item_index)
         except Exception as e:
@@ -1116,6 +1307,16 @@ class QtMainWindow(QMainWindow):
 
     def stop_translation(self):
         self.translation_manager.stop_translation()
+        
+    def stop_selected_item_translation(self):
+        """Stop translation of the currently selected item."""
+        if (self.current_item_index is not None and
+            self.current_project_data and
+            self._is_item_translating(self.current_item_index)):
+            self.translation_manager.stop_item_translation(self.current_item_index)
+        else:
+            QMessageBox.information(self, "Stop Translation",
+                                  "No item is currently being translated or no item selected.")
 
     def _handle_translation_chunk(self, chunk):
         self.translation_manager._handle_translation_chunk(chunk)
@@ -1134,34 +1335,74 @@ class QtMainWindow(QMainWindow):
     def _update_ui_state(self):
         project_loaded = self.current_project_data is not None
         item_selected = self.current_item_index is not None
-
-        self.save_action.setEnabled(project_loaded)
-        self.edit_action.setEnabled(project_loaded)
-        self.translate_action.setEnabled(project_loaded and item_selected)
+        
+        # Check translation state for locking
+        is_translating = self.translation_state_manager.current_state == TranslationState.TRANSLATING
+        
+        # Basic project actions - unlock project dialog during translation but keep item-specific locking
+        self.save_action.setEnabled(project_loaded and not is_translating)
+        self.edit_action.setEnabled(project_loaded)  # Always allow project dialog access
+        self.translate_action.setEnabled(project_loaded and item_selected and not self.translation_state_manager.should_lock_translate_button(self.current_item_index))
+        self.translate_button.setEnabled(project_loaded and item_selected and not self.translation_state_manager.should_lock_translate_button(self.current_item_index))
+        # Enable stop button only when current selected item is being translated
+        self.stop_button.setEnabled(project_loaded and item_selected and self._is_item_translating(self.current_item_index))
         self.toggle_live_preview_action.setEnabled(project_loaded and QWebEngineView is not None)
-        self.export_epub_action.setEnabled(project_loaded) # Enable export action when project is loaded
+        self.export_epub_action.setEnabled(project_loaded and not is_translating)
 
-        self.add_item_button.setEnabled(project_loaded)
-        self.remove_item_button.setEnabled(project_loaded and item_selected)
-        self.rename_item_button.setEnabled(project_loaded and item_selected)
-        self.duplicate_item_button.setEnabled(project_loaded and item_selected)
+        # Item management buttons - respect lock levels
+        self.add_item_button.setEnabled(project_loaded and self._can_modify_items())
+        self.remove_item_button.setEnabled(project_loaded and item_selected and self._can_modify_items())
+        self.rename_item_button.setEnabled(project_loaded and item_selected and self._can_modify_items())
+        self.duplicate_item_button.setEnabled(project_loaded and item_selected and self._can_modify_items())
 
+        # Move buttons - respect lock levels
         if project_loaded:
             self.update_move_button_states()
         else:
             self.move_item_up_button.setEnabled(False)
             self.move_item_down_button.setEnabled(False)
-
+            
+        # Text editing areas - respect lock levels but allow copy/scrolling
+        can_edit = project_loaded and item_selected and self._can_edit_text()
+        
+        # Set enabled state based on project and item selection
         self.source_text_area.setEnabled(project_loaded and item_selected)
         self.translated_text_area.setEnabled(project_loaded and item_selected)
+        
+        # Set read-only state based on item-specific translation status
+        can_edit_source = self._can_edit_current_source_text()
+        can_edit_translated = self._can_edit_current_translated_text()
+        
+        self.source_text_area.setReadOnly(not can_edit_source)
+        self.translated_text_area.setReadOnly(not can_edit_translated)
 
+        # Update save action text
         if project_loaded and self.is_dirty:
             self.save_action.setText("Save*")
         elif project_loaded:
              self.save_action.setText("Save")
 
+        # Update status bar
+        self._update_status_bar()
+        
+    def _update_status_bar(self):
+        """Update status bar with current translation state and context information."""
+        project_loaded = self.current_project_data is not None
+        item_selected = self.current_item_index is not None
+        
         if project_loaded:
-            if item_selected:
+            if self.translation_state_manager.current_state == TranslationState.TRANSLATING:
+                # Show multiple translating items if there are any
+                translating_items = self.translation_state_manager.get_translating_items()
+                if len(translating_items) == 1:
+                    # Single translation - show specific item
+                    item_index = list(translating_items)[0]
+                    item_name = self.project_items[item_index].get('name', 'Unknown')
+                    self.statusBar().showMessage(f"Translating: {item_name}")
+                else:
+                    # Multiple translations - show count
+                    self.statusBar().showMessage(f"Translating {len(translating_items)} items simultaneously")
+            elif item_selected:
                 included, excluded = self._get_context_item_indices()
                 context_limit = self.current_project_data.get('context_token_limit_approx', -1)
                 mode = self.current_project_data.get("context_selection_mode", "fill_budget")
@@ -1249,6 +1490,125 @@ class QtMainWindow(QMainWindow):
         button_box = QDialogButtonBox(QDialogButtonBox.Ok)
         button_box.accepted.connect(about_dialog.accept)
         layout.addWidget(button_box)
-        
         about_dialog.exec_()
 
+    # --- Translation State Management Signal Handlers ---
+    def _on_translation_state_changed(self, new_state):
+        """Handle changes in translation state."""
+        self._update_ui_state()
+        self._update_status_bar()
+        
+    def _on_lock_levels_changed(self, new_lock_level):
+        """Handle changes in lock levels."""
+        self._update_ui_state()
+        
+    def _on_translating_item_changed(self, item_index):
+        """Handle changes in translating item index."""
+        self._refresh_listbox_display()
+        self._update_ui_state()
+        
+    def _can_modify_items(self):
+        """Check if item modifications are allowed."""
+        return self.translation_state_manager.can_modify_items()
+        
+    def _can_edit_text(self):
+        """Check if text editing is allowed."""
+        return self.translation_state_manager.can_edit_text()
+        
+    def _can_select_items(self):
+        """Check if item selection is allowed."""
+        return self.translation_state_manager.can_select_items()
+        
+    def _is_item_translating(self, item_index):
+        """Check if an item is currently being translated."""
+        return self.translation_state_manager.is_item_translating(item_index) if item_index is not None else False
+        
+    def _is_item_suitable_for_context(self, item_index):
+        """
+        Check if an item is suitable for context inclusion.
+        Only COMPLETED or IDLE items are included.
+        Excludes TRANSLATING and ERROR items.
+        """
+        if item_index is None or not (0 <= item_index < len(self.project_items)):
+            return False
+        
+        # Exclude items that are currently being translated
+        if self._is_item_translating(item_index):
+            return False
+        
+        # Check if item has completed translation (from active translations)
+        if (item_index in self.translation_manager.active_translations):
+            buffer = self.translation_manager.active_translations[item_index]
+            # Include if translation is complete
+            if buffer.is_complete:
+                return True
+        
+        # Include items without active translations (IDLE state)
+        return True
+        
+    def _is_item_locked(self, item_index):
+        """Check if an item is locked during translation."""
+        return self.translation_state_manager.is_item_locked(item_index)
+
+
+
+
+    def _handle_translation_progress(self, progress_percent, status_message):
+        """Handle translation progress updates."""
+        if self.translation_state_manager.current_state == TranslationState.TRANSLATING:
+            # For multiple translations, we'll show the first one in the status
+            translating_items = self.translation_state_manager.get_translating_items()
+            if translating_items:
+                item_index = next(iter(translating_items))
+                current_item_name = self.project_items[item_index].get('name', 'Unknown')
+                status_msg = f"Translating: {current_item_name} - {progress_percent}% - {status_message}"
+            else:
+                status_msg = f"Translation in progress... - {progress_percent}% - {status_message}"
+            self.statusBar().showMessage(status_msg)
+
+    # --- Streaming State Management Methods ---
+    def _start_streaming_state(self):
+        """Call this method when translation streaming starts."""
+        self._is_currently_streaming = True
+        self._is_programmatically_updating_text = False
+
+    def _stop_streaming_state(self):
+        """Call this method when translation streaming stops."""
+        self._is_currently_streaming = False
+        self._is_programmatically_updating_text = False
+
+    def _start_programmatic_text_update(self):
+        """Call this method before programmatically updating text areas."""
+        self._is_programmatically_updating_text = True
+
+    def _end_programmatic_text_update(self):
+        """Call this method after programmatically updating text areas."""
+        self._is_programmatically_updating_text = False
+
+    # --- Item-Specific Edit Permission Methods ---
+    def _can_edit_current_source_text(self):
+        """Check if the current source text can be edited."""
+        if (self.current_item_index is None or
+            not self.current_project_data or
+            self.translation_state_manager.current_state == TranslationState.TRANSLATING):
+            return False
+        
+        # Allow editing source text for non-translating items
+        return True
+
+    def _can_edit_current_translated_text(self):
+        """Check if the current translated text can be edited."""
+        if (self.current_item_index is None or
+            not self.current_project_data or
+            self._is_item_translating(self.current_item_index)):
+            return False
+        
+        # Check if there's an active buffer for this item
+        if (self.current_item_index in self.translation_manager.active_translations):
+            buffer = self.translation_manager.active_translations[self.current_item_index]
+            # Don't allow editing if translation is in progress or completed but not stopped
+            if not buffer.is_stopped:
+                return False
+        
+        # Allow editing translated text for non-translating items without active buffers
+        return True

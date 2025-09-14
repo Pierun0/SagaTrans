@@ -2,6 +2,7 @@ import copy
 from PyQt5.QtWidgets import QMessageBox, QInputDialog
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
+from ui.translation_state_manager import TranslationState
 
 
 class ItemManager:
@@ -10,6 +11,10 @@ class ItemManager:
 
     def add_item(self):
         if not self.main_window.current_project_data: return
+        
+        # Allow adding items during translation (only lock operations on translating item)
+        # No global lock needed for adding items
+            
         item_name, ok = QInputDialog.getText(self.main_window, "Add Item", "Enter name for the new item:")
         if ok and item_name:
             item_name = item_name.strip()
@@ -29,6 +34,12 @@ class ItemManager:
 
     def remove_item(self):
         if self.main_window.current_item_index is None or not self.main_window.current_project_data: return
+        
+        # Only prevent removing the currently translating item, allow others during translation
+        if self.main_window.translation_state_manager.is_item_translating(self.main_window.current_item_index):
+            QMessageBox.warning(self.main_window, "Remove Item", "Cannot remove the item currently being translated.")
+            return
+            
         try:
             item_name = self.main_window.project_items[self.main_window.current_item_index].get("name", f"Item {self.main_window.current_item_index + 1}")
             reply = QMessageBox.question(self.main_window, "Remove Item", f"Are you sure you want to remove '{item_name}'?",
@@ -46,6 +57,12 @@ class ItemManager:
 
     def rename_item(self):
         if self.main_window.current_item_index is None or not self.main_window.current_project_data: return
+        
+        # Only prevent renaming the currently translating item, allow others during translation
+        if self.main_window.translation_state_manager.is_item_translating(self.main_window.current_item_index):
+            QMessageBox.warning(self.main_window, "Rename Item", "Cannot rename the item currently being translated.")
+            return
+            
         try:
             current_name = self.main_window.project_items[self.main_window.current_item_index].get("name", "")
             new_name, ok = QInputDialog.getText(self.main_window, "Rename Item", "Enter new name:", text=current_name)
@@ -73,6 +90,10 @@ class ItemManager:
 
     def duplicate_item(self):
         if self.main_window.current_item_index is None or not self.main_window.current_project_data: return
+        
+        # Allow duplicating items during translation (only lock operations on translating item)
+        # No global lock needed for duplicating items
+            
         try:
             original_item = self.main_window.project_items[self.main_window.current_item_index]
             new_item = copy.deepcopy(original_item)
@@ -102,6 +123,8 @@ class ItemManager:
 
     def move_item(self, direction):
         if self.main_window.current_item_index is None or not self.main_window.current_project_data: return
+        
+        # Only prevent moving the currently translating item, allow others during translation
         current_index = self.main_window.current_item_index
         if direction == 'up' and current_index > 0:
             new_index = current_index - 1

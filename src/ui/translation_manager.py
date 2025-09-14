@@ -2,11 +2,34 @@ import json
 from PyQt5.QtWidgets import QMessageBox, QDialog, QDialogButtonBox, QVBoxLayout, QTextEdit, QLabel, QTabWidget, QWidget
 from PyQt5.QtCore import QTimer
 from data_manager import load_config_defaults
+from ui.translation_state_manager import TranslationState
+from ui.item_translation_buffer import ItemTranslationBuffer
 
 
 class TranslationManager:
     def __init__(self, main_window):
         self.main_window = main_window
+        self.active_translations = {}  # item_index -> ItemTranslationBuffer
+        self.active_threads = {}  # item_index -> TranslationThread
+
+    def _build_api_payload_for_item(self, item_index):
+        """Build API payload for a specific item, overriding the current item index temporarily."""
+        if item_index is None or not self.main_window.current_project_data:
+            return None
+
+        # Store the current item index temporarily
+        original_item_index = self.main_window.current_item_index
+        
+        # Temporarily set the current item index to build the payload
+        self.main_window.current_item_index = item_index
+        
+        # Build the payload using the existing method
+        payload = self._build_api_payload()
+        
+        # Restore the original item index
+        self.main_window.current_item_index = original_item_index
+        
+        return payload
 
     def _build_api_payload(self):
         if self.main_window.current_item_index is None or not self.main_window.current_project_data:
@@ -113,79 +136,224 @@ class TranslationManager:
             QMessageBox.warning(self.main_window, "Translation", "No item selected or project loaded.")
             return
 
-        source_text = self.main_window.source_text_area.toPlainText().strip()
+        # Check if item is already being translated
+        if self.main_window.translation_state_manager.is_item_translating(self.main_window.current_item_index):
+            QMessageBox.warning(self.main_window, "Translation", "This item is already being translated.")
+            return
+            
+        # Start translation for this specific item
+        self.translate_item(self.main_window.current_item_index)
+        
+    def translate_item(self, item_index):
+        """Start translation for a specific item."""
+        if item_index is None or not self.main_window.current_project_data:
+            QMessageBox.warning(self.main_window, "Translation", "No item selected or project loaded.")
+            return
+
+        # Check if item is already being translated
+        if self.main_window.translation_state_manager.is_item_translating(item_index):
+            QMessageBox.warning(self.main_window, "Translation", "This item is already being translated.")
+            return
+
+        # Get source text for the specific item
+        if item_index == self.main_window.current_item_index:
+            source_text = self.main_window.source_text_area.toPlainText().strip()
+        else:
+            # Get source text from project data for non-current items
+            try:
+                source_text = self.main_window.project_items[item_index].get('source_text', '').strip()
+            except IndexError:
+                QMessageBox.critical(self.main_window, "Error", f"Item index {item_index} out of range.")
+                return
+                
         if not source_text:
             QMessageBox.warning(self.main_window, "Translation", "Source text is empty.")
             return
 
         try:
-            self.main_window.project_items[self.main_window.current_item_index]['source_text'] = source_text
+            self.main_window.project_items[item_index]['source_text'] = source_text
         except IndexError:
-            QMessageBox.critical(self.main_window, "Error", "Selected item index out of range.")
+            QMessageBox.critical(self.main_window, "Error", f"Item index {item_index} out of range.")
             return
 
-        payload = self._build_api_payload()
+        payload = self._build_api_payload_for_item(item_index)
         if not payload:
             return
 
-        self.main_window.translate_action.setEnabled(False)
-        self.main_window.translate_button.setText("Translating...")
-        self.main_window.translate_button.setEnabled(False)
-        self.main_window.stop_button.setEnabled(True)
-        self.main_window.translated_text_area.clear()
-
+        # Start translation state management for this specific item
+        self.main_window.translation_state_manager.start_translation(item_index)
+        
+        # Create or get translation buffer for this item
+        if item_index not in self.active_translations:
+            buffer = ItemTranslationBuffer(item_index)
+            self.active_translations[item_index] = buffer
+        
+        # If this is the currently selected item, clear the translated text area
+        if item_index == self.main_window.current_item_index:
+            self.main_window.translated_text_area.clear()
+        
         from ui.translation_thread import TranslationThread
-        self.main_window.translation_thread = TranslationThread(self.main_window)
+        
+        # Create a unique thread for this item
+        thread = TranslationThread(self.main_window, item_index)
+        self.active_threads[item_index] = thread  # Store the thread
 
-        self.main_window.translation_thread.chunk_received.connect(self.main_window._handle_translation_chunk)
-        self.main_window.translation_thread.finished.connect(self.main_window._handle_translation_finished)
-        self.main_window.translation_thread.error.connect(self.main_window._handle_translation_error)
+        thread.chunk_received.connect(
+            lambda chunk: self._handle_translation_chunk_with_buffer(item_index, chunk)
+        )
+        thread.progress_updated.connect(self.main_window._handle_translation_progress)
+        thread.finished.connect(
+            lambda: self._handle_translation_finished_with_buffer(item_index)
+        )
+        thread.error.connect(self.main_window._handle_translation_error)
 
-        self.main_window.translation_thread.start()
+        thread.start()
 
-    def stop_translation(self):
-        if hasattr(self.main_window, 'translation_thread') and self.main_window.translation_thread.isRunning():
-            self.main_window.translation_thread.stop() # Signal the thread to stop
+    def stop_translation(self, item_index=None):
+        """Stop translation for specific item or all items if item_index is None."""
+        if item_index is not None:
+            # Stop specific item
+            self.stop_item_translation(item_index)
+        else:
+            # Stop all translations
+            self.stop_all_translations()
+            
+    def stop_item_translation(self, item_index):
+        """Stop translation for a specific item."""
+        if item_index is None:
+            return
+            
+        # Check if this item is being translated
+        if not self.main_window.translation_state_manager.is_item_translating(item_index):
+            return
+            
+        # Check if there's an active buffer for this item
+        if item_index in self.active_translations:
+            buffer = self.active_translations[item_index]
+            buffer.stop()
+            
+        # Stop the thread if it exists
+        if item_index in self.active_threads:
+            thread = self.active_threads[item_index]
+            if thread.isRunning():
+                # Signal the thread to stop
+                thread.stop()
+                
+                # Wait a short time for thread to stop gracefully
+                if not thread.wait(1000):  # Wait up to 1 second
+                    # If thread is still running, terminate it forcefully
+                    if thread.isRunning():
+                        thread.terminate()
+                        thread.wait(500)  # Wait a bit more for termination
+                
+            # Clean up thread
+            del self.active_threads[item_index]
+            
+        # Use state manager to handle stopping
+        self.main_window.translation_state_manager.stop_translation(item_index)
+            
+        # Update UI state
+        self.main_window._update_ui_state()
+        
+        # Update status bar
+        item_name = self.main_window.project_items[item_index].get('name', f'Item {item_index + 1}')
+        self.main_window.statusBar().showMessage(f"Translation for '{item_name}' stopped by user.", 3000)
+        
+        # Clean up translation buffer
+        if item_index in self.active_translations:
+            del self.active_translations[item_index]
+            
+    def stop_all_translations(self):
+        """Stop all active translations."""
+        # Get all currently translating items
+        translating_items = list(self.main_window.translation_state_manager.get_translating_items())
+        
+        # Stop each item
+        for item_index in translating_items:
+            self.stop_item_translation(item_index)
+            
+        # Update status bar
+        self.main_window.statusBar().showMessage("All translations stopped by user.", 3000)
 
-            # Immediately reset button states
-            self.main_window.translate_action.setEnabled(True) # Re-enable toolbar action
-            self.main_window.translate_button.setText("Translate ->")
-            self.main_window.translate_button.setEnabled(True) # Re-enable translate button
-            self.main_window.stop_button.setEnabled(False) # Disable stop button
-            self.main_window.statusBar().showMessage("Translation stopped by user.", 3000) # Update status
-
-    def _handle_translation_chunk(self, chunk):
-        self.main_window.translated_text_area.insertPlainText(chunk)
-        self.main_window.translated_text_area.ensureCursorVisible()
-
+    def _handle_translation_chunk_with_buffer(self, item_index, chunk):
+        """Handle translation chunk with buffering system"""
+        # Add chunk to buffer if it exists
+        if item_index in self.active_translations:
+            buffer = self.active_translations[item_index]
+            if buffer.add_chunk(chunk):
+                # If user is currently viewing this item, show real-time progress
+                if self.main_window.current_item_index == item_index:
+                    # Prevent textChanged signal during streaming update
+                    self.main_window._start_programmatic_text_update()
+                    self.main_window.translated_text_area.blockSignals(True)
+                    
+                    # Move cursor to end before inserting text to ensure streaming appears at end
+                    cursor = self.main_window.translated_text_area.textCursor()
+                    cursor.movePosition(cursor.End)
+                    self.main_window.translated_text_area.setTextCursor(cursor)
+                    
+                    # Insert the text chunk
+                    self.main_window.translated_text_area.insertPlainText(chunk)
+                    
+                    # Ensure cursor is visible at the end
+                    self.main_window.translated_text_area.ensureCursorVisible()
+                    self.main_window.translated_text_area.blockSignals(False)
+                    self.main_window._end_programmatic_text_update()
+                else:
+                    # User is not viewing this item, but we should update the status
+                    self.main_window._update_status_bar()
+        
+        # Also store in response buffer for compatibility
         if not hasattr(self.main_window, '_response_buffer'):
             self.main_window._response_buffer = []
         self.main_window._response_buffer.append(chunk)
 
-    def _handle_translation_finished(self):
+    def _handle_translation_finished_with_buffer(self, item_index):
+        """Handle translation completion with buffering system"""
         try:
-            translated_text = self.main_window.translated_text_area.toPlainText().strip()
-            if self.main_window.current_item_index is None:
-                raise ValueError("No item selected")
-            if not 0 <= self.main_window.current_item_index < len(self.main_window.project_items):
-                raise IndexError(f"Invalid item index {self.main_window.current_item_index}")
+            # Stop streaming state tracking for this item
+            # Note: We don't call _stop_streaming_state() here as it's global
+            # We want other translations to continue if they're running
+            
+            # Get the complete text from buffer
+            if item_index in self.active_translations:
+                buffer = self.active_translations[item_index]
+                buffer.complete()
+                translated_text = buffer.get_full_text()
+                
+                # Save to project data only after translation is complete
+                if 0 <= item_index < len(self.main_window.project_items):
+                    self.main_window.project_items[item_index]['translated_text'] = translated_text
+                    self.main_window.mark_dirty()
+                
+                # Clear from active translations
+                del self.active_translations[item_index]
+            else:
+                # Fallback to existing method if buffer doesn't exist
+                if item_index == self.main_window.current_item_index:
+                    translated_text = self.main_window.translated_text_area.toPlainText().strip()
+                else:
+                    # For non-current items, we need to get the text from the buffer
+                    translated_text = ""  # This shouldn't happen if buffer exists
+                    
+                if not 0 <= item_index < len(self.main_window.project_items):
+                    raise IndexError(f"Invalid item index {item_index}")
 
-            self.main_window.project_items[self.main_window.current_item_index]['translated_text'] = translated_text
-            self.main_window.mark_dirty()
+                self.main_window.project_items[item_index]['translated_text'] = translated_text
+                self.main_window.mark_dirty()
 
             if hasattr(self.main_window, '_response_buffer'):
-                self.main_window.last_response = ''.join(self.main_window._response_buffer)
-                self.main_window._response_buffer = []
+                # Only clear the response buffer if this was the current item
+                if item_index == self.main_window.current_item_index:
+                    self.main_window.last_response = ''.join(self.main_window._response_buffer)
+                    self.main_window._response_buffer = []
 
-            # Reset all UI elements
-            self.main_window.translate_action.setEnabled(True)
-            self.main_window.translate_button.setText("Translate ->")
-            self.main_window.translate_button.setEnabled(True)
-            self.main_window.stop_button.setEnabled(False)
-            self.main_window.toggle_preview_button.setEnabled(True)
-            self.main_window.view_request_action.setEnabled(True)
-            self.main_window.view_response_action.setEnabled(True)
-            self.main_window.statusBar().showMessage("Translation completed", 3000)
+            # Use state manager to handle completion for this specific item
+            self.main_window.translation_state_manager.complete_translation(item_index)
+            
+            # Update status bar with item-specific message
+            item_name = self.main_window.project_items[item_index].get('name', f'Item {item_index + 1}')
+            self.main_window.statusBar().showMessage(f"Translation for '{item_name}' completed", 3000)
         except Exception as e:
             error_msg = f"Failed to save translation: {e}"
             QMessageBox.critical(self.main_window, "Error", error_msg)
@@ -208,14 +376,9 @@ class TranslationManager:
         msg_box.setStandardButtons(QMessageBox.Ok)
         msg_box.exec_()
 
-        # Reset UI state
-        self.main_window.translate_action.setEnabled(True)
-        self.main_window.translate_button.setText("Translate ->")
-        self.main_window.translate_button.setEnabled(True)
-        self.main_window.stop_button.setEnabled(False)
-        self.main_window.toggle_preview_button.setEnabled(True)
-        self.main_window.view_request_action.setEnabled(True)
-        self.main_window.view_response_action.setEnabled(True)
+        # Use state manager to handle error state
+        self.main_window.translation_state_manager.handle_error()
+        
         self.main_window.statusBar().showMessage("Translation failed - " + error_msg.split('\n')[0], 5000)
 
     def show_request_payload(self):
