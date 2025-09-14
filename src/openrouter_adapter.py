@@ -58,6 +58,25 @@ class OpenRouterAdapter(ModelRequestHandler):
         try:
             with requests.post(self.endpoint, json=openrouter_payload,
                              headers=headers, stream=True, timeout=60*10) as response:
+                # Check for specific status codes
+                if response.status_code == 403:
+                    # Try to get detailed error message from response
+                    try:
+                        error_data = response.json()
+                        error_msg = error_data.get("error", {}).get("message", "Access denied")
+                    except (json.JSONDecodeError, ValueError):
+                        error_msg = response.text or "Access denied"
+                    
+                    # Differentiate between different types of 403 errors
+                    if "api key" in error_msg.lower() or "invalid api key" in error_msg.lower():
+                        raise Exception(f"OpenRouter API key error: {error_msg}")
+                    elif "quota" in error_msg.lower() or "rate limit" in error_msg.lower():
+                        raise Exception(f"OpenRouter quota exceeded: {error_msg}")
+                    elif "model" in error_msg.lower() and "access" in error_msg.lower():
+                        raise Exception(f"OpenRouter model access denied: {error_msg}")
+                    else:
+                        raise Exception(f"OpenRouter access denied (403): {error_msg}")
+                
                 response.raise_for_status()
                 
                 for line in response.iter_lines():
@@ -81,7 +100,24 @@ class OpenRouterAdapter(ModelRequestHandler):
                             except json.JSONDecodeError as e:
                                 continue
         except requests.exceptions.RequestException as e:
-            raise Exception(f"OpenRouter request failed: {str(e)}")
+            # Check if this is a 403 error that wasn't caught above
+            if hasattr(e, 'response') and e.response is not None and e.response.status_code == 403:
+                try:
+                    error_data = e.response.json()
+                    error_msg = error_data.get("error", {}).get("message", "Access denied")
+                except (json.JSONDecodeError, ValueError):
+                    error_msg = e.response.text or "Access denied"
+                
+                if "api key" in error_msg.lower() or "invalid api key" in error_msg.lower():
+                    raise Exception(f"OpenRouter API key error: {error_msg}")
+                elif "quota" in error_msg.lower() or "rate limit" in error_msg.lower():
+                    raise Exception(f"OpenRouter quota exceeded: {error_msg}")
+                elif "model" in error_msg.lower() and "access" in error_msg.lower():
+                    raise Exception(f"OpenRouter model access denied: {error_msg}")
+                else:
+                    raise Exception(f"OpenRouter access denied (403): {error_msg}")
+            else:
+                raise Exception(f"OpenRouter request failed: {str(e)}")
 
     def get_parameters(self) -> Dict[str, Any]:
         return self.config.get('parameters', {})

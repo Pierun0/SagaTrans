@@ -93,6 +93,7 @@ class QtMainWindow(QMainWindow):
         self.translation_state_manager.state_changed.connect(self._on_translation_state_changed)
         self.translation_state_manager.lock_levels_changed.connect(self._on_lock_levels_changed)
         self.translation_state_manager.translating_item_changed.connect(self._on_translating_item_changed)
+        self.translation_state_manager.ui_refresh_needed.connect(self._on_ui_refresh_needed)
 
         # Create a central widget
         self.central_widget = QWidget()
@@ -315,6 +316,7 @@ class QtMainWindow(QMainWindow):
                 color: #888;
             }
         """)
+        
         self.toggle_preview_button = QPushButton("Show Live Preview") # This button will toggle the preview panel
         self.toggle_preview_button.clicked.connect(self.toggle_live_preview_panel) # Connect to toggle_live_preview_panel
 
@@ -517,7 +519,9 @@ class QtMainWindow(QMainWindow):
             is_suitable_for_context = self._is_item_suitable_for_context(i)
             
             # Add translation status prefix
-            if self._is_item_translating(i):
+            is_translating = self._is_item_translating(i)
+            print(f"DEBUG: Item {i} translation status check: {is_translating}")
+            if is_translating:
                 display_name = f"[🔄] TRANSLATING: {name}"
                 font_weight = "bold"
                 font_style = "normal"
@@ -1328,7 +1332,6 @@ class QtMainWindow(QMainWindow):
         self.translation_manager._handle_translation_error(error_msg)
 
 
-
     def preview_request(self):
         pass
 
@@ -1507,6 +1510,16 @@ class QtMainWindow(QMainWindow):
         self._refresh_listbox_display()
         self._update_ui_state()
         
+    def _on_ui_refresh_needed(self):
+        """Handle UI refresh needed signal, typically after error recovery."""
+        print("DEBUG: UI refresh needed signal received")
+        print(f"DEBUG: Current state: {self.translation_state_manager.current_state}")
+        print(f"DEBUG: Translating items: {self.translation_state_manager.get_translating_items()}")
+        print(f"DEBUG: Active translations: {list(self.translation_manager.active_translations.keys())}")
+        self._refresh_listbox_display()
+        self._update_ui_state()
+        self._update_status_bar()
+        
     def _can_modify_items(self):
         """Check if item modifications are allowed."""
         return self.translation_state_manager.can_modify_items()
@@ -1521,7 +1534,25 @@ class QtMainWindow(QMainWindow):
         
     def _is_item_translating(self, item_index):
         """Check if an item is currently being translated."""
-        return self.translation_state_manager.is_item_translating(item_index) if item_index is not None else False
+        if item_index is None:
+            return False
+        
+        # Check the translation state manager first
+        state_manager_result = self.translation_state_manager.is_item_translating(item_index)
+        
+        # Check if there's an active translation buffer
+        has_active_buffer = item_index in self.translation_manager.active_translations
+        
+        print(f"DEBUG: Item {item_index} translation status:")
+        print(f"  - State manager result: {state_manager_result}")
+        print(f"  - Has active buffer: {has_active_buffer}")
+        print(f"  - Active translations keys: {list(self.translation_manager.active_translations.keys())}")
+        
+        # The item is considered translating if EITHER the state manager says so OR there's an active buffer
+        result = state_manager_result or has_active_buffer
+        print(f"  - Final result: {result}")
+        
+        return result
         
     def _is_item_suitable_for_context(self, item_index):
         """

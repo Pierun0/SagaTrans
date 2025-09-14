@@ -205,7 +205,12 @@ class TranslationManager:
         thread.finished.connect(
             lambda: self._handle_translation_finished_with_buffer(item_index)
         )
-        thread.error.connect(self.main_window._handle_translation_error)
+        thread.error.connect(self._handle_translation_error_with_type)
+        thread.timeout_detected.connect(self._handle_timeout_detected)
+        
+        # Connect to UI refresh signal from state manager
+        self.main_window.translation_state_manager.ui_refresh_needed.connect(self._clear_active_translations)
+        thread.validation_failed.connect(self._handle_validation_failed)
 
         thread.start()
 
@@ -361,7 +366,35 @@ class TranslationManager:
     def _handle_translation_error(self, error_msg):
         """Handle translation errors with detailed error analysis and recovery options"""
         # Detailed error analysis
-        if "timeout" in error_msg.lower():
+        if "openrouter api key error" in error_msg.lower():
+            detailed_msg = (f"OpenRouter API Key Error:\n{error_msg}\n\n"
+                          f"This could be due to:\n"
+                          f"• Invalid or expired API key\n"
+                          f"• Missing API key in your project settings\n"
+                          f"• API key format issues\n\n"
+                          f"Please check your OpenRouter API key in project settings.")
+        elif "openrouter quota exceeded" in error_msg.lower() or "rate limit" in error_msg.lower():
+            detailed_msg = (f"OpenRouter Quota Exceeded:\n{error_msg}\n\n"
+                          f"This could be due to:\n"
+                          f"• API usage limit reached\n"
+                          f"• Too many requests in a short time\n"
+                          f"• Account subscription limits\n\n"
+                          f"Please wait a while or check your OpenRouter account limits.")
+        elif "openrouter model access denied" in error_msg.lower():
+            detailed_msg = (f"OpenRouter Model Access Denied:\n{error_msg}\n\n"
+                          f"This could be due to:\n"
+                          f"• Model requires special access\n"
+                          f"• Model is not available to your account\n"
+                          f"• Model is deprecated or unavailable\n\n"
+                          f"Please check model availability in your OpenRouter account.")
+        elif "openrouter access denied" in error_msg.lower():
+            detailed_msg = (f"OpenRouter Access Denied:\n{error_msg}\n\n"
+                          f"This could be due to:\n"
+                          f"• Authentication issues\n"
+                          f"• Account restrictions\n"
+                          f"• Service maintenance\n\n"
+                          f"Please check your OpenRouter account status.")
+        elif "timeout" in error_msg.lower():
             detailed_msg = f"Connection timeout:\n{error_msg}\n\nCheck your network connection and Ollama server status."
         elif "model not found" in error_msg.lower():
             detailed_msg = f"Model error:\n{error_msg}\n\nVerify the model name and ensure it's pulled on your Ollama server."
@@ -376,10 +409,55 @@ class TranslationManager:
         msg_box.setStandardButtons(QMessageBox.Ok)
         msg_box.exec_()
 
-        # Use state manager to handle error state
-        self.main_window.translation_state_manager.handle_error()
+        # Detect if this is a 403 error and pass error type to state manager
+        error_type = None
+        if "403" in error_msg or "access denied" in error_msg.lower() or "api key error" in error_msg.lower():
+            error_type = "403"
         
-        self.main_window.statusBar().showMessage("Translation failed - " + error_msg.split('\n')[0], 5000)
+        # Use state manager to handle error state with error type
+        self.main_window.translation_state_manager.handle_error(error_type=error_type)
+    
+    def _handle_translation_error_with_type(self, error_msg, error_type=None):
+        """Handle translation errors with error type information for specialized handling"""
+        print(f"DEBUG: Handling translation error with type: {error_type}, message: {error_msg}")
+        print(f"DEBUG: Active translations before error handling: {list(self.active_translations.keys())}")
+        print(f"DEBUG: Current translation item: {getattr(self, 'current_translation_item', 'NOT SET')}")
+        
+        # For 403 errors, ensure immediate state reset through state manager
+        if error_type == "403":
+            print("DEBUG: 403 error detected, calling force_reset")
+            self.main_window.translation_state_manager.handle_error(error_type="403")
+            return
+            
+        # For other errors, use the detailed error handling
+        self._handle_translation_error(error_msg)
+        
+        # Also notify state manager about the error type for additional handling
+        self.main_window.translation_state_manager.handle_error(error_type=error_type)
+        
+        print(f"DEBUG: Active translations after error handling: {list(self.active_translations.keys())}")
+        
+        # Clear all active translations to prevent stuck status
+        print(f"DEBUG: Clearing all active translations to prevent stuck status")
+        items_to_clear = list(self.active_translations.keys())
+        self.active_translations.clear()
+        print(f"DEBUG: Cleared {len(items_to_clear)} items. Active translations after cleanup: {list(self.active_translations.keys())}")
+        
+        # Also clear the current translation item if it exists
+        if hasattr(self, 'current_translation_item') and self.current_translation_item is not None:
+            print(f"DEBUG: Clearing current translation item: {self.current_translation_item}")
+            self.current_translation_item = None
+    
+    def _clear_active_translations(self):
+        """Clear all active translations, called when UI refresh is needed after error recovery."""
+        print(f"DEBUG: UI refresh triggered - clearing active translations")
+        print(f"DEBUG: Current translation item: {getattr(self, 'current_translation_item', 'NOT SET')}")
+        items_to_clear = list(self.active_translations.keys())
+        self.active_translations.clear()
+        print(f"DEBUG: Cleared {len(items_to_clear)} items during UI refresh. Active translations: {list(self.active_translations.keys())}")
+        
+        
+        # Don't show error message here since this is just a cleanup method
 
     def show_request_payload(self):
         if self.main_window.current_item_index is None or not self.main_window.current_project_data:
@@ -491,3 +569,105 @@ class TranslationManager:
             dialog.exec_()
         except Exception as e:
             QMessageBox.critical(self.main_window, "Error", f"Failed to show response:\n{e}")
+
+    def _handle_timeout_detected(self, timeout_msg):
+        """Handle translation timeout detected by TranslationThread."""
+        print(f"DEBUG: Translation timeout detected: {timeout_msg}")
+        
+        # Get the item index from active threads
+        item_index = None
+        for idx, thread in self.active_threads.items():
+            if thread == self.sender():
+                item_index = idx
+                break
+        
+        if item_index is not None:
+            # Clean up the specific item translation
+            self._cleanup_failed_translation(item_index, timeout_msg, timeout=True)
+        else:
+            # Fallback to general timeout handling
+            self._handle_translation_error(f"Translation timeout: {timeout_msg}")
+
+    def _handle_validation_failed(self, validation_msg):
+        """Handle validation failure detected by TranslationThread."""
+        print(f"DEBUG: Validation failed: {validation_msg}")
+        
+        # Get the item index from active threads
+        item_index = None
+        for idx, thread in self.active_threads.items():
+            if thread == self.sender():
+                item_index = idx
+                break
+        
+        if item_index is not None:
+            # Clean up the specific item translation
+            self._cleanup_failed_translation(item_index, validation_msg, validation=True)
+        else:
+            # Fallback to general error handling
+            self._handle_translation_error(f"Validation failed: {validation_msg}")
+
+    def _cleanup_failed_translation(self, item_index, error_msg, timeout=False, validation=False):
+        """Clean up after a failed translation and reset state."""
+        try:
+            # Mark item as stopped in buffer if it exists
+            if item_index in self.active_translations:
+                buffer = self.active_translations[item_index]
+                buffer.stop()
+            
+            # Stop the thread if it exists
+            if item_index in self.active_threads:
+                thread = self.active_threads[item_index]
+                if thread.isRunning():
+                    thread.stop()
+                    # Wait a short time for thread to stop gracefully
+                    if not thread.wait(1000):
+                        if thread.isRunning():
+                            thread.terminate()
+                            thread.wait(500)
+                # Clean up thread
+                del self.active_threads[item_index]
+            
+            # Use state manager to handle error state for this specific item
+            self.main_window.translation_state_manager.stop_translation(item_index)
+            
+            # Update UI state
+            self.main_window._update_ui_state()
+            
+            # Show appropriate error message based on error type
+            if timeout:
+                detailed_msg = (f"Translation timed out:\n{error_msg}\n\n"
+                              f"This could be due to:\n"
+                              f"• Slow network connection\n"
+                              f"• Server overload\n"
+                              f"• Large text requiring more processing time\n\n"
+                              f"Try reducing text length or checking your connection.")
+            elif validation:
+                detailed_msg = (f"Connection validation failed:\n{error_msg}\n\n"
+                              f"This could be due to:\n"
+                              f"• Model not available on server\n"
+                              f"• Authentication issues\n"
+                              f"• Server maintenance\n\n"
+                              f"Check your model configuration and server status.")
+            else:
+                detailed_msg = f"Translation failed:\n{error_msg}"
+            
+            # Show error dialog
+            msg_box = QMessageBox(self.main_window)
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setWindowTitle("Translation Error")
+            msg_box.setText(detailed_msg)
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            msg_box.exec_()
+            
+            # Update status bar
+            item_name = self.main_window.project_items[item_index].get('name', f'Item {item_index + 1}')
+            status_msg = f"Translation for '{item_name}' failed - {error_msg.split(':')[0]}"
+            self.main_window.statusBar().showMessage(status_msg, 5000)
+            
+            # Clean up translation buffer
+            if item_index in self.active_translations:
+                del self.active_translations[item_index]
+                
+        except Exception as cleanup_error:
+            # Log cleanup errors but don't let them interfere with the main error handling
+            print(f"Error during translation cleanup: {cleanup_error}")
